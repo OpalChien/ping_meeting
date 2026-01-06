@@ -46,7 +46,7 @@ def upload_signature_to_sheet(name, img_data):
     # 1. 圖片處理 (縮小尺寸以符合儲存格限制)
     img = Image.fromarray(img_data.astype('uint8'), 'RGBA')
     
-    # 縮放圖片，寬度限制在 400px 以內，保持比例 (減少字串長度)
+    # 縮放圖片，寬度限制在 400px 以內，保持比例
     max_width = 400
     if img.width > max_width:
         ratio = max_width / img.width
@@ -55,15 +55,15 @@ def upload_signature_to_sheet(name, img_data):
 
     # 轉成 Bytes
     buf = io.BytesIO()
-    img.save(buf, format="PNG", optimize=True) # 開啟最佳化減少體積
+    img.save(buf, format="PNG", optimize=True) 
     img_bytes = buf.getvalue()
 
     # 2. 轉成 Base64 字串
     img_base64 = base64.b64encode(img_bytes).decode('utf-8')
     
-    # 檢查長度 (Google Sheet 單一儲存格上限 50,000 字元)
+    # 檢查長度
     if len(img_base64) > 50000:
-        st.error("簽名檔案過大，請嘗試簽簡單一點或聯繫管理員。")
+        st.error("簽名檔案過大，請聯繫管理員。")
         return False
 
     # 3. 寫入 Google Sheets
@@ -86,34 +86,33 @@ def fetch_data_and_images():
     worksheet = sh.sheet1
     records = worksheet.get_all_records()
     
-    # 處理資料，將 Base64 轉回 Image 物件
     parsed_data = []
     signed_map = {}
     
     for row in records:
         name = row['姓名']
-        b64_str = row['簽名數據(Base64)']
+        # 容錯處理：如果欄位名稱不對，或者沒有資料
+        b64_str = row.get('簽名數據(Base64)', '')
         
-        # 嘗試解碼圖片
-        try:
-            img_bytes = base64.b64decode(b64_str)
-            img = Image.open(io.BytesIO(img_bytes))
-            signed_map[name] = img # 存入 Map 供製表使用
-        except Exception as e:
-            print(f"Error decoding image for {name}: {e}")
-            img = None
+        img = None
+        if b64_str:
+            try:
+                img_bytes = base64.b64decode(b64_str)
+                img = Image.open(io.BytesIO(img_bytes))
+                signed_map[name] = img 
+            except Exception:
+                pass
 
         parsed_data.append({
             "姓名": name,
             "簽到時間": row['簽到時間'],
-            "狀態": "✅ 圖片已載入" if img else "❌ 圖片錯誤"
+            "狀態": "✅ 圖片已載入" if img else "❌ 無圖片"
         })
         
     return parsed_data, signed_map
 
-# === 報表生成 (維持不變) ===
+# === 報表生成 ===
 def generate_report_image(member_list, signed_map):
-    # 設定圖片參數
     row_height = 60
     header_height = 40
     col_width_name = 300
@@ -124,7 +123,7 @@ def generate_report_image(member_list, signed_map):
     img = Image.new('RGB', (total_width, total_height), color='white')
     draw = ImageDraw.Draw(img)
     
-    # 字型設定
+    # 字型載入
     try:
         font = ImageFont.truetype("msjh.ttc", 24)
         header_font = ImageFont.truetype("msjhbd.ttc", 28)
@@ -136,7 +135,6 @@ def generate_report_image(member_list, signed_map):
             font = ImageFont.load_default()
             header_font = ImageFont.load_default()
 
-    # 繪製表格
     draw.rectangle([0, 0, total_width-1, total_height-1], outline="black", width=2)
     draw.line([col_width_name, 0, col_width_name, total_height], fill="black", width=2)
     draw.line([0, header_height, total_width, header_height], fill="black", width=2)
@@ -148,10 +146,8 @@ def generate_report_image(member_list, signed_map):
         draw.line([0, current_y + row_height, total_width, current_y + row_height], fill="black", width=1)
         draw.text((10, current_y + 15), name, font=font, fill="black")
         
-        # 貼上簽名
         if name in signed_map and signed_map[name] is not None:
             sign_img = signed_map[name]
-            
             target_h = row_height - 10
             aspect_ratio = sign_img.width / sign_img.height
             target_w = int(target_h * aspect_ratio)
