@@ -3,6 +3,7 @@ import pandas as pd
 from streamlit_drawable_canvas import st_canvas
 from PIL import Image, ImageDraw, ImageFont
 import datetime
+from datetime import timedelta # 引入時間加法工具
 import io
 import gspread
 import base64
@@ -10,7 +11,7 @@ import qrcode
 from google.oauth2.service_account import Credentials
 
 # === 1. 基本設定 ===
-st.set_page_config(page_title="部會議電子簽到系統 (時段自動分流版)", layout="wide")
+st.set_page_config(page_title="部會議電子簽到系統 (台灣時間版)", layout="wide")
 
 # Google Sheets 授權範圍
 SCOPES = [
@@ -37,17 +38,18 @@ def get_gcp_service():
     gc = gspread.authorize(creds)
     return gc
 
-# === 3. 上傳功能：根據時間自動分頁 ===
+# === 3. 上傳功能：根據時間自動分頁 (已修正時區) ===
 def upload_signature_to_sheet(name, img_data):
     gc = get_gcp_service()
     sheet_id = st.secrets["google_ids"]["sheet_id"]
     
-    # 取得現在時間
-    now = datetime.datetime.now()
-    timestamp = now.strftime("%Y-%m-%d %H:%M:%S")
+    # === 關鍵修正：手動將伺服器時間 (UTC) +8 小時換算成台灣時間 ===
+    taiwan_time = datetime.datetime.now() + timedelta(hours=8)
+    
+    timestamp = taiwan_time.strftime("%Y-%m-%d %H:%M:%S")
     
     # 關鍵邏輯：定義分頁名稱 (每小時一個分頁)
-    sheet_name = now.strftime("%Y-%m-%d_%H時")
+    sheet_name = taiwan_time.strftime("%Y-%m-%d_%H時")
 
     # 處理圖片
     img = Image.fromarray(img_data.astype('uint8'), 'RGBA')
@@ -194,8 +196,9 @@ role = st.sidebar.radio("請選擇身分", ["✍️ 出席人員簽到", "🔒 �
 if role == "✍️ 出席人員簽到":
     st.title("📝 部會議電子簽到表")
     
-    # 顯示當前時段提示
-    current_session = datetime.datetime.now().strftime("%Y-%m-%d %H點場次")
+    # 顯示當前時段提示 (這裡也修正為台灣時間)
+    taiwan_now = datetime.datetime.now() + timedelta(hours=8)
+    current_session = taiwan_now.strftime("%Y-%m-%d %H點場次")
     st.info(f"現在是：{current_session}")
 
     selected_name = st.selectbox("請選擇您的姓名", ["請選擇..."] + MEMBER_LIST)
