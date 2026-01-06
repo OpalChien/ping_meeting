@@ -1,0 +1,5 @@
+# .gitignore 內容
+*.json
+.streamlit/
+__pycache__/
+*.csv
