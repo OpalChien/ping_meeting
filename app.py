@@ -5,17 +5,15 @@ from PIL import Image, ImageDraw, ImageFont
 import datetime
 import io
 import gspread
+import base64
 from google.oauth2.service_account import Credentials
-from googleapiclient.discovery import build
-from googleapiclient.http import MediaIoBaseUpload
 
 # === 設定與 Secrets 讀取 ===
-st.set_page_config(page_title="部會議電子簽到系統 (雲端版)", layout="wide")
+st.set_page_config(page_title="部會議電子簽到系統 (Base64版)", layout="wide")
 
-# 定義 Scope
+# 只需使用 Sheets 的權限
 SCOPES = [
     "https://www.googleapis.com/auth/spreadsheets",
-    "https://www.googleapis.com/auth/drive"
 ]
 
 # 名單
@@ -29,88 +27,93 @@ MEMBER_LIST = [
     "張詩柔研究助理", "鄭弘裕研究助理", "李怡樺研究助理"
 ]
 
-# === 雲端連線函數 (加上快取以提升效能) ===
+# === 雲端連線函數 ===
 @st.cache_resource
-def get_gcp_services():
+def get_gcp_service():
     # 從 st.secrets 讀取憑證
     creds_dict = st.secrets["gcp_service_account"]
     creds = Credentials.from_service_account_info(creds_dict, scopes=SCOPES)
-    
-    # 連線 Sheets
     gc = gspread.authorize(creds)
-    
-    # 連線 Drive
-    drive_service = build('drive', 'v3', credentials=creds)
-    
-    return gc, drive_service
+    return gc
 
-# === 核心功能：上傳簽名並寫入資料 ===
-def upload_signature_and_log(name, img_data):
-    gc, drive_service = get_gcp_services()
+# === 核心功能：圖片轉 Base64 並寫入 Sheets ===
+def upload_signature_to_sheet(name, img_data):
+    gc = get_gcp_service()
     sheet_id = st.secrets["google_ids"]["sheet_id"]
-    folder_id = st.secrets["google_ids"]["folder_id"]
     
     timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    file_name = f"{name}_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.png"
 
-    # 1. 將圖片轉為 Bytes 準備上傳
+    # 1. 圖片處理 (縮小尺寸以符合儲存格限制)
     img = Image.fromarray(img_data.astype('uint8'), 'RGBA')
-    buf = io.BytesIO()
-    img.save(buf, format="PNG")
-    buf.seek(0) # 重置指針
+    
+    # 縮放圖片，寬度限制在 400px 以內，保持比例 (減少字串長度)
+    max_width = 400
+    if img.width > max_width:
+        ratio = max_width / img.width
+        new_height = int(img.height * ratio)
+        img = img.resize((max_width, new_height))
 
-    # 2. 上傳到 Google Drive
-    file_metadata = {
-        'name': file_name,
-        'parents': [folder_id]
-    }
-    media = MediaIoBaseUpload(buf, mimetype='image/png')
-    file = drive_service.files().create(body=file_metadata, media_body=media, fields='id').execute()
-    file_id = file.get('id')
+    # 轉成 Bytes
+    buf = io.BytesIO()
+    img.save(buf, format="PNG", optimize=True) # 開啟最佳化減少體積
+    img_bytes = buf.getvalue()
+
+    # 2. 轉成 Base64 字串
+    img_base64 = base64.b64encode(img_bytes).decode('utf-8')
+    
+    # 檢查長度 (Google Sheet 單一儲存格上限 50,000 字元)
+    if len(img_base64) > 50000:
+        st.error("簽名檔案過大，請嘗試簽簡單一點或聯繫管理員。")
+        return False
 
     # 3. 寫入 Google Sheets
     sh = gc.open_by_key(sheet_id)
-    worksheet = sh.sheet1 # 預設第一張工作表
+    worksheet = sh.sheet1 
     
-    # 檢查是否有標題列，沒有的話加上
+    # 檢查標題列
     if not worksheet.get_values("A1"):
-        worksheet.append_row(["姓名", "簽到時間", "檔案ID", "檔案名稱"])
+        worksheet.append_row(["姓名", "簽到時間", "簽名數據(Base64)"])
     
     # 寫入資料
-    worksheet.append_row([name, timestamp, file_id, file_name])
-    
+    worksheet.append_row([name, timestamp, img_base64])
     return True
 
-# === 核心功能：從雲端讀取資料並下載圖片 ===
-def fetch_data_from_cloud():
-    gc, drive_service = get_gcp_services()
+# === 核心功能：從雲端讀取資料並還原圖片 ===
+def fetch_data_and_images():
+    gc = get_gcp_service()
     sheet_id = st.secrets["google_ids"]["sheet_id"]
-    
     sh = gc.open_by_key(sheet_id)
     worksheet = sh.sheet1
-    
-    # 讀取所有資料 (回傳 List of Dicts)
     records = worksheet.get_all_records()
-    return records, drive_service
-
-# === 核心功能：下載圖片以生成報表 ===
-def download_image_from_drive(drive_service, file_id):
-    try:
-        request = drive_service.files().get_media(fileId=file_id)
-        file = io.BytesIO()
-        downloader = request.execute()
-        return Image.open(io.BytesIO(downloader))
-    except Exception as e:
-        print(f"Error downloading {file_id}: {e}")
-        return None
-
-# === 報表生成 (與之前類似，但圖片來源改為參數傳入) ===
-def generate_report_image(member_list, signed_map):
-    # ... (這裡沿用之前的 generate_report_image 程式碼，邏輯不變) ...
-    # 為了節省篇幅，請複製上一版程式碼的 generate_report_image 函數貼在這裡
-    # 唯一要注意的是 font_path 的設定
     
-    # 這裡簡單重寫開頭示意：
+    # 處理資料，將 Base64 轉回 Image 物件
+    parsed_data = []
+    signed_map = {}
+    
+    for row in records:
+        name = row['姓名']
+        b64_str = row['簽名數據(Base64)']
+        
+        # 嘗試解碼圖片
+        try:
+            img_bytes = base64.b64decode(b64_str)
+            img = Image.open(io.BytesIO(img_bytes))
+            signed_map[name] = img # 存入 Map 供製表使用
+        except Exception as e:
+            print(f"Error decoding image for {name}: {e}")
+            img = None
+
+        parsed_data.append({
+            "姓名": name,
+            "簽到時間": row['簽到時間'],
+            "狀態": "✅ 圖片已載入" if img else "❌ 圖片錯誤"
+        })
+        
+    return parsed_data, signed_map
+
+# === 報表生成 (維持不變) ===
+def generate_report_image(member_list, signed_map):
+    # 設定圖片參數
     row_height = 60
     header_height = 40
     col_width_name = 300
@@ -121,14 +124,17 @@ def generate_report_image(member_list, signed_map):
     img = Image.new('RGB', (total_width, total_height), color='white')
     draw = ImageDraw.Draw(img)
     
-    # ... (字型載入邏輯同上) ...
-    # 字型設定 (請確保有字型檔)
+    # 字型設定
     try:
         font = ImageFont.truetype("msjh.ttc", 24)
         header_font = ImageFont.truetype("msjhbd.ttc", 28)
     except:
-        font = ImageFont.load_default()
-        header_font = ImageFont.load_default()
+        try:
+            font = ImageFont.truetype("NotoSansTC-Regular.ttf", 24)
+            header_font = ImageFont.truetype("NotoSansTC-Regular.ttf", 28)
+        except:
+            font = ImageFont.load_default()
+            header_font = ImageFont.load_default()
 
     # 繪製表格
     draw.rectangle([0, 0, total_width-1, total_height-1], outline="black", width=2)
@@ -142,9 +148,9 @@ def generate_report_image(member_list, signed_map):
         draw.line([0, current_y + row_height, total_width, current_y + row_height], fill="black", width=1)
         draw.text((10, current_y + 15), name, font=font, fill="black")
         
-        # 關鍵修改：從 signed_map (來自雲端資料) 抓圖片
+        # 貼上簽名
         if name in signed_map and signed_map[name] is not None:
-            sign_img = signed_map[name] # 這已經是 PIL Image 物件
+            sign_img = signed_map[name]
             
             target_h = row_height - 10
             aspect_ratio = sign_img.width / sign_img.height
@@ -161,12 +167,11 @@ def generate_report_image(member_list, signed_map):
         current_y += row_height
     return img
 
-
 # === UI 介面 ===
 role = st.sidebar.radio("請選擇身分", ["✍️ 出席人員簽到", "🔒 管理員後台"])
 
 if role == "✍️ 出席人員簽到":
-    st.title("📝 部會議電子簽到表 (Cloud Sync)")
+    st.title("📝 部會議電子簽到表 (Base64版)")
     selected_name = st.selectbox("請選擇您的姓名", ["請選擇..."] + MEMBER_LIST)
     
     if selected_name != "請選擇...":
@@ -184,10 +189,11 @@ if role == "✍️ 出席人員簽到":
         
         if st.button("送出簽名"):
             if canvas_result.image_data is not None:
-                with st.spinner("正在上傳至雲端..."):
+                with st.spinner("正在儲存簽名..."):
                     try:
-                        upload_signature_and_log(selected_name, canvas_result.image_data)
-                        st.success(f"{selected_name} 簽到成功！資料已同步至 Google Sheets。")
+                        success = upload_signature_to_sheet(selected_name, canvas_result.image_data)
+                        if success:
+                            st.success(f"{selected_name} 簽到成功！")
                     except Exception as e:
                         st.error(f"上傳失敗: {e}")
             else:
@@ -195,46 +201,29 @@ if role == "✍️ 出席人員簽到":
 
 elif role == "🔒 管理員後台":
     password = st.sidebar.text_input("輸入管理員密碼", type="password")
-    if password == "admin":
+    if password == "123456":
         st.subheader("1. 雲端資料讀取")
         if st.button("重新整理/載入資料"):
-            with st.spinner("正在從 Google Sheets 與 Drive 讀取資料..."):
-                records, drive_service = fetch_data_from_cloud()
-                st.session_state['cloud_records'] = records
-                st.session_state['drive_service'] = drive_service # 暫存 service 物件供下方使用
-                st.success(f"讀取到 {len(records)} 筆紀錄")
+            with st.spinner("正在解碼雲端資料..."):
+                try:
+                    parsed_records, signed_map = fetch_data_and_images()
+                    st.session_state['parsed_records'] = parsed_records
+                    st.session_state['signed_map'] = signed_map
+                    st.success(f"讀取到 {len(parsed_records)} 筆紀錄")
+                except Exception as e:
+                    st.error(f"讀取失敗: {e}")
 
-        if 'cloud_records' in st.session_state:
-            df = pd.DataFrame(st.session_state['cloud_records'])
+        if 'parsed_records' in st.session_state:
+            df = pd.DataFrame(st.session_state['parsed_records'])
             st.dataframe(df)
             
             st.divider()
             st.subheader("2. 生成正式簽到表")
-            if st.button("下載所有簽名並生成圖片"):
-                # 建立一個 Name -> Image 的映射
-                signed_map = {}
-                records = st.session_state['cloud_records']
-                drive_service = st.session_state['drive_service']
+            if st.button("生成圖片"):
+                final_img = generate_report_image(MEMBER_LIST, st.session_state['signed_map'])
+                st.image(final_img, caption="簽到表預覽", use_container_width=True)
                 
-                # 進度條
-                progress_bar = st.progress(0)
-                
-                for i, record in enumerate(records):
-                    name = record['姓名']
-                    file_id = record['檔案ID']
-                    # 只抓最新的一筆 (如果同一人簽多次，Excel下面會覆蓋上面，或者你可以在這裡寫邏輯只取最後一筆)
-                    # 這裡簡單做：直接下載
-                    img = download_image_from_drive(drive_service, file_id)
-                    signed_map[name] = img
-                    progress_bar.progress((i + 1) / len(records))
-                
-                # 生成最終大圖
-                final_img = generate_report_image(MEMBER_LIST, signed_map)
-                
-                st.image(final_img, caption="雲端合成結果", use_container_width=True)
-                
-                # 下載按鈕
                 buf = io.BytesIO()
                 final_img.save(buf, format="PNG")
                 byte_im = buf.getvalue()
-                st.download_button("下載簽到表圖片 (PNG)", byte_im, "signed_sheet_cloud.png", "image/png")
+                st.download_button("下載簽到表圖片 (PNG)", byte_im, "signed_sheet_base64.png", "image/png")
