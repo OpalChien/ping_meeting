@@ -6,6 +6,7 @@ import datetime
 import io
 import gspread
 import base64
+import qrcode
 from google.oauth2.service_account import Credentials
 
 # === 1. 基本設定 ===
@@ -45,8 +46,7 @@ def upload_signature_to_sheet(name, img_data):
     now = datetime.datetime.now()
     timestamp = now.strftime("%Y-%m-%d %H:%M:%S")
     
-    # 關鍵邏輯：定義分頁名稱 (例如: 2026-01-06_14時)
-    # 這樣每小時會自動歸類到不同頁籤
+    # 關鍵邏輯：定義分頁名稱 (每小時一個分頁)
     sheet_name = now.strftime("%Y-%m-%d_%H時")
 
     # 處理圖片
@@ -76,7 +76,7 @@ def upload_signature_to_sheet(name, img_data):
     except gspread.exceptions.WorksheetNotFound:
         # 如果找不到 (代表是這個小時的第一個簽到者)，就建立新分頁
         worksheet = sh.add_worksheet(title=sheet_name, rows=100, cols=20)
-        # 並且馬上寫入標題列 (不用再去手動加了！)
+        # 並且馬上寫入標題列
         worksheet.append_row(["姓名", "簽到時間", "簽名數據(Base64)"])
     
     # 寫入資料到該分頁
@@ -126,7 +126,7 @@ def get_all_sheet_names():
     # 回傳所有分頁的標題列表
     return [ws.title for ws in sh.worksheets()]
 
-# === 5. 製圖功能 (維持不變) ===
+# === 5. 製圖功能 ===
 def generate_report_image(member_list, signed_map, sheet_title):
     row_height = 60
     header_height = 40
@@ -138,13 +138,14 @@ def generate_report_image(member_list, signed_map, sheet_title):
     img = Image.new('RGB', (total_width, total_height), color='white')
     draw = ImageDraw.Draw(img)
     
+    # 指定使用 msjhbd.ttc (粗體)
     font_path = "msjhbd.ttc"
     try:
         font = ImageFont.truetype(font_path, 24)
         header_font = ImageFont.truetype(font_path, 28)
         title_font = ImageFont.truetype(font_path, 32) # 大標題字型
     except OSError:
-        st.error(f"找不到字型檔 {font_path}")
+        st.error(f"找不到字型檔 {font_path}，中文將無法顯示。請確認 GitHub 上有此檔案。")
         font = ImageFont.load_default()
         header_font = ImageFont.load_default()
         title_font = ImageFont.load_default()
@@ -227,6 +228,20 @@ if role == "✍️ 出席人員簽到":
 elif role == "🔒 管理員後台":
     password = st.sidebar.text_input("輸入管理員密碼", type="password")
     if password == "123456":
+        
+        # === 側邊欄：顯示 QR Code ===
+        with st.sidebar.expander("📱 顯示簽到 QR Code", expanded=True):
+            app_url = "https://pingmeeting-wyye56thbwbxcersndyhmg.streamlit.app/"
+            qr = qrcode.QRCode(version=1, box_size=10, border=5)
+            qr.add_data(app_url)
+            qr.make(fit=True)
+            img_qr = qr.make_image(fill_color="black", back_color="white")
+            
+            # 轉換成 Bytes
+            buf = io.BytesIO()
+            img_qr.save(buf, format="PNG")
+            st.image(buf.getvalue(), caption="請掃描簽到", use_container_width=True)
+
         st.subheader("1. 選擇要查看的時段 (分頁)")
         
         # 取得所有分頁清單
@@ -241,7 +256,7 @@ elif role == "🔒 管理員後台":
                         parsed_records, signed_map = fetch_data_and_images(selected_sheet)
                         st.session_state['parsed_records'] = parsed_records
                         st.session_state['signed_map'] = signed_map
-                        st.session_state['current_sheet_title'] = selected_sheet # 記住現在選的是哪一張
+                        st.session_state['current_sheet_title'] = selected_sheet
                         
                         if len(parsed_records) == 0:
                             st.warning("此分頁沒有資料。")
