@@ -234,6 +234,7 @@ if role == "✍️ 出席人員簽到":
                         success, sheet_name = upload_signature_to_sheet(selected_name, canvas_result.image_data)
                         if success:
                             st.success(f"{selected_name} 簽到成功！資料已存入「{sheet_name}」。")
+                            st.balloons() # 🎈 氣球特效在這裡！
                     except Exception as e:
                         st.error(f"上傳失敗: {e}")
             else:
